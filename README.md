@@ -477,3 +477,186 @@ const json = JSON.parse(decrypted.toString(CryptoJS.enc.Utf8));
 | `076` | 西安 |
 
 实际使用时仍建议优先通过城市接口动态获取 `cityId`，不要硬编码。
+
+## 九、2026-03-19 追加研究
+
+这一节只追加这次新的研究成果，不改上面的原始整理内容。
+
+### 1. 新发现的可用接口
+
+这次继续验证后，补充确认以下接口也可用：
+
+- `GET /api/bus/stop!nearPhysicalStns.action`
+- `GET /api/basesearch/client/clientSearch.action`
+- `GET /api/basesearch/client/clientSearchList.action`
+- `GET /api/bus/stop!encryptedStnDetail.action`
+
+其中最关键的是：
+
+- `nearPhysicalStns.action`
+  - 用坐标直接拿附近站点
+- `clientSearch.action`
+  - 用关键字直接搜线路、站点、地点
+- `encryptedStnDetail.action`
+  - 用站点直接拿该站下所有线路方向、`targetOrder`、`nextStation`
+
+### 2. 更快的推荐查询流程
+
+相比原来的：
+
+1. `citylist`
+2. `cityLineList`
+3. `lineRoute.action`
+4. `encryptedLineDetail.action`
+
+现在更推荐按输入条件选择不同主链。
+
+#### A. 已知坐标
+
+适合“定位 -> 附近站点 -> 实时”：
+
+1. `citylist`
+2. `stop!nearPhysicalStns.action`
+3. `stop!encryptedStnDetail.action`
+4. `line!encryptedLineDetail.action`
+
+这是最稳的“坐标优先链路”。
+
+#### B. 已知站点名
+
+适合“市一中、韶关东站”这类输入：
+
+1. `basesearch/client/clientSearch.action`
+2. `stop!encryptedStnDetail.action`
+3. `line!encryptedLineDetail.action`
+
+这是最短的“站点优先链路”，通常只要 3 次请求。
+
+#### C. 已知线路号，要看双向和完整站序
+
+1. `cityLineList`
+2. `line!lineRoute.action`
+
+如果后续还要实时：
+
+3. `line!encryptedLineDetail.action`
+
+#### D. 已缓存完整定位参数
+
+如果已经有：
+
+- `lineId`
+- `lineName`
+- `direction`
+- `stationName`
+- `nextStationName`
+- `lineNo`
+- `targetOrder`
+
+可以直接调用：
+
+- `line!encryptedLineDetail.action`
+
+这就是最终最快的一次请求链路。
+
+### 3. `encryptedStnDetail.action` 的价值
+
+这条接口是这次研究里最关键的新发现。
+
+它能直接返回：
+
+- 站点名、站点 ID
+- 该站有哪些线路
+- 每条线路的方向
+- `targetStation.order`
+- `nextStation.sn`
+- 该站视角下的预估到站信息
+
+也就是说，很多场景下不再需要先走：
+
+- `cityLineList`
+- `lineRoute.action`
+
+而是可以直接：
+
+- 站点 -> `encryptedStnDetail` -> `encryptedLineDetail`
+
+### 4. 实测结论
+
+2026-03-19 再次实测，以下链路均可用：
+
+- `nearby`
+  - `citylist -> nearPhysicalStns -> encryptedNearlines`
+- `station`
+  - `clientSearch -> encryptedStnDetail`
+- `realtime`
+  - `clientSearch/nearPhysicalStns -> encryptedStnDetail -> encryptedLineDetail`
+- `route`
+  - `cityLineList -> lineRoute`
+
+以 `韶关市 7 路 市一中站` 为例：
+
+- `station` 可以直接拿到两个方向：
+  - `中山公园 -> 市高级技校`
+  - `市高级技校 -> 中山公园`
+- 同时拿到：
+  - `targetOrder`
+  - `nextStation`
+- `realtime` 可以继续直接查实时车辆详情
+
+### 5. 新增脚本
+
+仓库里新增了一份无依赖 `Node.js` 脚本：
+
+- `scripts/chelaile-fast.js`
+
+用途是把上面几条更快的查询链直接封装成命令行工具。
+
+支持 4 个命令：
+
+- `nearby`
+- `station`
+- `realtime`
+- `route`
+
+示例：
+
+```bash
+node scripts/chelaile-fast.js nearby --lat 24.790420789217144 --lng 113.65760519230128
+node scripts/chelaile-fast.js station --city-id 241 --station 市一中 --line 7
+node scripts/chelaile-fast.js realtime --city-id 241 --station 市一中 --line 7
+node scripts/chelaile-fast.js route --city-id 241 --line 7 --station 市一中
+```
+
+补充说明：
+
+- 如果没传 `--city-id`，但传了 `--lat --lng`，脚本会先自动调用 `citylist`
+- `realtime` 默认优先走：
+  - `encryptedStnDetail -> encryptedLineDetail`
+- 需要机器可读输出时，可以加 `--json`
+
+### 6. 进一步建议
+
+如果后续继续优化查询速度，建议按下面思路缓存：
+
+#### 缓存层级
+
+1. 城市缓存
+   - `lat/lng -> cityId`
+2. 站点缓存
+   - `stationName -> sId`
+   - `lat/lng -> nearby stations`
+3. 线路定位缓存
+   - `stationId + lineNo -> lineId + direction + targetOrder + nextStationName`
+4. 实时数据不长期缓存
+   - 实时详情只做短缓存
+
+#### 实际效果
+
+这样二次查询时，很多请求可以压缩成：
+
+- 0 次搜索 + 1 次实时详情
+或
+- 1 次站点详情 + 1 次实时详情
+
+而不需要每次都重新拉全线路、全站序。
