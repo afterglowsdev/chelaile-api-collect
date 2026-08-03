@@ -152,9 +152,7 @@ async function action(ctx, handler, params, accept) {
 }
 
 async function encryptedAction(ctx, handler, bizParams) {
-  const rawSign = Object.entries(bizParams).map(([key, value]) => `${key}=${value}`).join('&');
-  const cryptoSign = md5Hex(rawSign + 'qwihrnbtmj');
-  const data = await action(ctx, handler, { ...bizParams, cryptoSign });
+  const data = await action(ctx, handler, { ...bizParams, cryptoSign: '1' });
   if (!data || !data.encryptResult) {
     throw new Error(`Missing encryptResult from ${handler}`);
   }
